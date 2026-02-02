@@ -1,5 +1,6 @@
 import os
 import gradio as gr
+import base64
 
 from langchain_groq import ChatGroq
 from langchain_core.output_parsers import StrOutputParser
@@ -115,18 +116,68 @@ def run_query(question: str) -> str:
 # ==============================
 # GRADIO UI
 # ==============================
-interface = gr.Interface(
-    fn=run_query,
-    inputs=gr.Textbox(
-        label="Question",
-        placeholder="Ask a cancer-related question..."
-    ),
-    outputs=gr.Textbox(
-        label="Response",
-        lines=10
-    ),
-    title="Thermo Med Assistant",
-    description="Ask evidence-based questions related to cancer."
-)
 
-interface.launch(server_name="0.0.0.0", server_port=7860)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGO_PATH = os.path.join(BASE_DIR, "thermo_logo.jpg")
+
+title_html = f"""
+<div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+    <img src="/file={LOGO_PATH}" style="height: 50px; width: auto; object-fit: contain;" />
+    <h1 style="margin: 0; font-size: 24px; font-weight: 600;">Thermo Med Assistant</h1>
+</div>
+"""
+
+
+
+with gr.Blocks(
+    css="""
+    #response_box {
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 14px;
+        min-height: 260px;
+        background-color: white;
+        overflow-y: auto;
+        font-size: 14px;
+        line-height: 1.6;
+    }
+    """
+) as interface:
+
+    # ---------------------------------
+    # HEADER (LOGO + TITLE)
+    # ---------------------------------
+    gr.HTML(title_html)
+
+    gr.Markdown("Ask genetic-based questions related to ThermoFisher Scientific.")
+
+    # ---------------------------------
+    # RESPONSE AREA
+    # ---------------------------------
+    response_output = gr.Markdown(
+        label="Response",
+        elem_id="response_box"
+    )
+
+    # ---------------------------------
+    # INPUT AREA
+    # ---------------------------------
+    question_input = gr.Textbox(
+        label="Your question",
+        placeholder="Ask any query related to ThermoFisher Scientific...",
+        lines=2
+    )
+
+    with gr.Row():
+        submit_btn = gr.Button("Submit", variant="primary")
+        clear_btn = gr.Button("Clear")
+
+    submit_btn.click(run_query, question_input, response_output)
+    clear_btn.click(lambda: "", None, response_output)
+
+
+# ---------------------------------
+# LAUNCH
+# ---------------------------------
+interface.launch(server_name="0.0.0.0", server_port=7860, allowed_paths=[BASE_DIR])
