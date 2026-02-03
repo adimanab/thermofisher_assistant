@@ -1,183 +1,223 @@
-import os
 import gradio as gr
 import base64
+import os
+from config import LOGO_PATH, validate_config
+from vector_store import initialize_vector_db
+from rag_engine import rag_query
 
-from langchain_groq import ChatGroq
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+# =====================================================
+# INITIALIZATION
+# =====================================================
+validate_config()
+initialize_vector_db()
 
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters.sentence_transformers import (
-    SentenceTransformersTokenTextSplitter
-)
-from langchain_chroma import Chroma
+# =====================================================
+# UI HELPERS
+# =====================================================
+def encode_image(path):
+    if not os.path.exists(path):
+        return ""
+    with open(path, "rb") as img:
+        return base64.b64encode(img.read()).decode("utf-8")
 
-from systemPrompt import get_thermo_med_prompt
+logo_b64 = encode_image(LOGO_PATH)
 
-
-# ==============================
-# CONFIG
-# ==============================
-os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not found in environment variables")
-
-DATASET_PATH = "dataset.pdf"
-PERSIST_DIR = "pharma_db"
-
-os.makedirs(PERSIST_DIR, exist_ok=True)
-
-
-# ==============================
-# EMBEDDINGS
-# ==============================
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-
-
-# ==============================
-# VECTOR DATABASE
-# ==============================
-db = Chroma(
-    persist_directory=PERSIST_DIR,
-    embedding_function=embeddings
-)
-
-
-# ==============================
-# LOAD & INDEX PDF
-# ==============================
-if os.path.exists(DATASET_PATH):
-
-    if len(db.get()["ids"]) == 0:
-        print("📄 Indexing PDF...")
-
-        loader = PyPDFLoader(DATASET_PATH)
-        documents = loader.load()
-
-        splitter = SentenceTransformersTokenTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50
-        )
-
-        chunks = splitter.split_documents(documents)
-        db.add_documents(chunks)
-
-        print("✅ PDF indexed successfully.")
-
-else:
-    print("⚠️ dataset.pdf not found.")
-
-
-# ==============================
-# PROMPT & PARSER
-# ==============================
-prompt = get_thermo_med_prompt()
-output_parser = StrOutputParser()
-
-
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
-
-
-# ==============================
-# RAG QUERY FUNCTION
-# ==============================
-def run_query(question: str) -> str:
-
-    if not question.strip():
-        return "Please enter a question."
-
-    retriever = db.as_retriever(search_kwargs={"k": 5})
-
-    llm = ChatGroq(
-        model="llama-3.1-8b-instant",
-        api_key=GROQ_API_KEY,
-        temperature=0
-    )
-
-    rag_chain = (
-        {
-            "context": retriever | format_docs,
-            "question": RunnablePassthrough(),
-        }
-        | prompt
-        | llm
-        | output_parser
-    )
-
-    return rag_chain.invoke(question)
-
-
-# ==============================
-# GRADIO UI
-# ==============================
-
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOGO_PATH = os.path.join(BASE_DIR, "thermo_logo.jpg")
-
-title_html = f"""
-<div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
-    <img src="/file={LOGO_PATH}" style="height: 50px; width: auto; object-fit: contain;" />
-    <h1 style="margin: 0; font-size: 24px; font-weight: 600;">Thermo Med Assistant</h1>
+header_html = f"""
+<div style="
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 0;
+">
+    <img
+        src="data:image/jpeg;base64,{logo_b64}"
+        style="height: 50px; object-fit: contain;"
+    />
+    <span style="font-size: 22px; font-weight: 600;">
+        Thermo Med Assistant
+    </span>
 </div>
 """
 
 
+def chat_rag(message, history):
+    if not message.strip():
+        return history
 
+    answer = rag_query(message)
+
+    history = history + [
+        {"role": "user", "content": message},
+        {"role": "assistant", "content": answer}
+    ]
+
+    return history
+
+# =====================================================
+# GRADIO UI
+# =====================================================
 with gr.Blocks(
-    css="""
-    #response_box {
-        border: 1px solid #d1d5db;
-        border-radius: 8px;
-        padding: 14px;
-        min-height: 260px;
-        background-color: white;
+   css="""
+    /* ================== GLOBAL LAYOUT ================== */
+    html, body, .gradio-container {
+        height: 100%;
+        margin: 0;
+    }
+
+    .gradio-container {
+        display: flex;
+        justify-content: center;
+        background-color: var(--background-fill-primary);
+    }
+
+    #root, .app {
+        width: 100%;
+        max-width: 1100px;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        padding: 16px;
+    }
+
+    .gr-chatbot {
+        flex: 1;
         overflow-y: auto;
-        font-size: 14px;
-        line-height: 1.6;
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px solid #374151;
+    }
+
+    .gr-chat-message {
+        max-width: 75%;
+        padding: 12px 14px;
+        border-radius: 14px;
+        font-size: 14.5px;
+        line-height: 1.5;
+        word-wrap: break-word;
+    }
+
+    .gr-chat-message.user {
+        margin-left: auto;
+        border-bottom-right-radius: 4px;
+    }
+
+    .gr-chat-message.bot {
+        margin-right: auto;
+        border-bottom-left-radius: 4px;
+    }
+
+    #input-bar {
+        position: sticky;
+        bottom: 0;
+        background-color: var(--background-fill-primary);
+        padding-top: 12px;
+    }
+
+    textarea {
+        border-radius: 12px !important;
+        padding: 12px !important;
+        font-size: 14.5px !important;
+        resize: none !important;
+    }
+
+    textarea::placeholder {
+        color: #9ca3af;
+    }
+
+    button {
+        border-radius: 10px !important;
+    }
+
+    @media (prefers-color-scheme: light) {
+        .gr-chatbot {
+            background-color: #ffffff;
+        }
+
+        .gr-chat-message {
+            background-color: #ffffff;
+            color: #111827;
+            border: 1px solid #e5e7eb;
+        }
+
+        .gr-chat-message.user {
+            background-color: #e0f2fe;
+            border-color: #bae6fd;
+        }
+    }
+
+    @media (prefers-color-scheme: dark) {
+        .gr-chatbot {
+            background-color: #020617;
+        }
+
+        .gr-chat-message {
+            background-color: #111827;
+            color: #e5e7eb;
+            border: 1px solid #374151;
+        }
+
+        .gr-chat-message.user {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+
+        footer {
+    display: none !important;
+   }
     }
     """
 ) as interface:
 
-    # ---------------------------------
-    # HEADER (LOGO + TITLE)
-    # ---------------------------------
-    gr.HTML(title_html)
+    # Header
+    gr.HTML(header_html)
 
-    gr.Markdown("Ask genetic-based questions related to ThermoFisher Scientific.")
-
-    # ---------------------------------
-    # RESPONSE AREA
-    # ---------------------------------
-    response_output = gr.Markdown(
-        label="Response",
-        elem_id="response_box"
+    gr.Markdown(
+        "Ask **genetic-based questions** related to **ThermoFisher Scientific**."
     )
 
-    # ---------------------------------
-    # INPUT AREA
-    # ---------------------------------
+    # Chat window
+    chatbot = gr.Chatbot(
+        height=420,
+        show_label=False
+    )
+
+    # Input
     question_input = gr.Textbox(
-        label="Your question",
-        placeholder="Ask any query related to ThermoFisher Scientific...",
-        lines=2
+        placeholder="Ask anything about ThermoFisher Scientific...",
+        lines=1,
+        max_lines=4,
+        show_label=False,
+        label=None
     )
 
+    # Buttons
     with gr.Row():
-        submit_btn = gr.Button("Submit", variant="primary")
-        clear_btn = gr.Button("Clear")
+        send_btn = gr.Button("Send", variant="primary")
+        clear_btn = gr.Button("Clear Chat")
 
-    submit_btn.click(run_query, question_input, response_output)
-    clear_btn.click(lambda: "", None, response_output)
+    # Send message
+    send_btn.click(
+        fn=chat_rag,
+        inputs=[question_input, chatbot],
+        outputs=chatbot
+    )
 
+    # Clear input after send
+    send_btn.click(
+        fn=lambda: "",
+        inputs=None,
+        outputs=question_input
+    )
 
-# ---------------------------------
-# LAUNCH
-# ---------------------------------
-interface.launch(server_name="0.0.0.0", server_port=7860, allowed_paths=[BASE_DIR])
+    # Clear chat
+    clear_btn.click(
+        fn=lambda: [],
+        inputs=None,
+        outputs=chatbot
+    )
+
+if __name__ == "__main__":
+    interface.launch(
+    server_name="0.0.0.0",
+    server_port=7860
+)
