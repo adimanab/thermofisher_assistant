@@ -1,113 +1,22 @@
-import os
-import base64
 import gradio as gr
-
-from langchain_groq import ChatGroq
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters.sentence_transformers import (
-    SentenceTransformersTokenTextSplitter
-)
-from langchain_chroma import Chroma
-
-from systemPrompt import get_thermo_med_prompt
-
+import base64
+import os
+from config import LOGO_PATH, validate_config
+from vector_store import initialize_vector_db
+from rag_engine import rag_query
 
 # =====================================================
-# CONFIG
+# INITIALIZATION
 # =====================================================
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    raise RuntimeError("GROQ_API_KEY not set")
-
-DATASET_PATH = "dataset.pdf"
-PERSIST_DIR = "pharma_db"
-os.makedirs(PERSIST_DIR, exist_ok=True)
-
+validate_config()
+initialize_vector_db()
 
 # =====================================================
-# EMBEDDINGS & VECTOR DB
+# UI HELPERS
 # =====================================================
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-
-db = Chroma(
-    persist_directory=PERSIST_DIR,
-    embedding_function=embeddings
-)
-
-
-# =====================================================
-# LOAD & INDEX PDF (ONCE)
-# =====================================================
-if os.path.exists(DATASET_PATH) and len(db.get()["ids"]) == 0:
-    print("📄 Indexing dataset.pdf...")
-
-    loader = PyPDFLoader(DATASET_PATH)
-    documents = loader.load()
-
-    splitter = SentenceTransformersTokenTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50
-    )
-
-    chunks = splitter.split_documents(documents)
-    db.add_documents(chunks)
-
-    print("✅ Indexing completed")
-
-
-# =====================================================
-# PROMPT & OUTPUT PARSER
-# =====================================================
-prompt = get_thermo_med_prompt()
-output_parser = StrOutputParser()
-
-
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
-
-
-# =====================================================
-# RAG QUERY FUNCTION (DO NOT OVERRIDE)
-# =====================================================
-def rag_query(question: str) -> str:
-
-    if not question.strip():
-        return "**Please enter a question.**"
-
-    retriever = db.as_retriever(search_kwargs={"k": 5})
-
-    llm = ChatGroq(
-        model="llama-3.1-8b-instant",
-        api_key=GROQ_API_KEY,
-        temperature=0
-    )
-
-    rag_chain = (
-        {
-            "context": retriever | format_docs,
-            "question": RunnablePassthrough(),
-        }
-        | prompt
-        | llm
-        | output_parser
-    )
-
-    return rag_chain.invoke(question)
-
-
-# =====================================================
-# LOGO (BASE64 — BROWSER SAFE)
-# =====================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOGO_PATH = os.path.join(BASE_DIR, "thermo_logo.jpg")
-
 def encode_image(path):
+    if not os.path.exists(path):
+        return ""
     with open(path, "rb") as img:
         return base64.b64encode(img.read()).decode("utf-8")
 
@@ -131,58 +40,184 @@ header_html = f"""
 """
 
 
+def chat_rag(message, history):
+    if not message.strip():
+        return history
+
+    answer = rag_query(message)
+
+    history = history + [
+        {"role": "user", "content": message},
+        {"role": "assistant", "content": answer}
+    ]
+
+    return history
+
 # =====================================================
 # GRADIO UI
 # =====================================================
 with gr.Blocks(
-    css="""
-    #response_box {
-        border: 1px solid #d1d5db;
-        border-radius: 8px;
-        padding: 14px;
-        min-height: 260px;
-        background-color: white;
-        font-size: 14px;
-        line-height: 1.6;
+   css="""
+    /* ================== GLOBAL LAYOUT ================== */
+    html, body, .gradio-container {
+        height: 100%;
+        margin: 0;
+    }
+
+    .gradio-container {
+        display: flex;
+        justify-content: center;
+        background-color: var(--background-fill-primary);
+    }
+
+    #root, .app {
+        width: 100%;
+        max-width: 1100px;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        padding: 16px;
+    }
+
+    .gr-chatbot {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px solid #374151;
+    }
+
+    .gr-chat-message {
+        max-width: 75%;
+        padding: 12px 14px;
+        border-radius: 14px;
+        font-size: 14.5px;
+        line-height: 1.5;
+        word-wrap: break-word;
+    }
+
+    .gr-chat-message.user {
+        margin-left: auto;
+        border-bottom-right-radius: 4px;
+    }
+
+    .gr-chat-message.bot {
+        margin-right: auto;
+        border-bottom-left-radius: 4px;
+    }
+
+    #input-bar {
+        position: sticky;
+        bottom: 0;
+        background-color: var(--background-fill-primary);
+        padding-top: 12px;
+    }
+
+    textarea {
+        border-radius: 12px !important;
+        padding: 12px !important;
+        font-size: 14.5px !important;
+        resize: none !important;
+    }
+
+    textarea::placeholder {
+        color: #9ca3af;
+    }
+
+    button {
+        border-radius: 10px !important;
+    }
+
+    @media (prefers-color-scheme: light) {
+        .gr-chatbot {
+            background-color: #ffffff;
+        }
+
+        .gr-chat-message {
+            background-color: #ffffff;
+            color: #111827;
+            border: 1px solid #e5e7eb;
+        }
+
+        .gr-chat-message.user {
+            background-color: #e0f2fe;
+            border-color: #bae6fd;
+        }
+    }
+
+    @media (prefers-color-scheme: dark) {
+        .gr-chatbot {
+            background-color: #020617;
+        }
+
+        .gr-chat-message {
+            background-color: #111827;
+            color: #e5e7eb;
+            border: 1px solid #374151;
+        }
+
+        .gr-chat-message.user {
+            background-color: #1e293b;
+            border-color: #334155;
+        }
+
+        footer {
+    display: none !important;
+   }
     }
     """
 ) as interface:
 
-    # HEADER
+    # Header
     gr.HTML(header_html)
 
     gr.Markdown(
         "Ask **genetic-based questions** related to **ThermoFisher Scientific**."
     )
 
-    response_output = gr.Markdown(elem_id="response_box")
+    # Chat window
+    chatbot = gr.Chatbot(
+        height=420,
+        show_label=False
+    )
 
+    # Input
     question_input = gr.Textbox(
-        placeholder="Ask any query related to ThermoFisher Scientific...",
-        lines=2
+        placeholder="Ask anything about ThermoFisher Scientific...",
+        lines=1,
+        max_lines=4,
+        show_label=False,
+        label=None
     )
 
+    # Buttons
     with gr.Row():
-        submit_btn = gr.Button("Submit", variant="primary")
-        clear_btn = gr.Button("Clear")
+        send_btn = gr.Button("Send", variant="primary")
+        clear_btn = gr.Button("Clear Chat")
 
-    submit_btn.click(
-        fn=rag_query,
-        inputs=question_input,
-        outputs=response_output
+    # Send message
+    send_btn.click(
+        fn=chat_rag,
+        inputs=[question_input, chatbot],
+        outputs=chatbot
     )
 
-    clear_btn.click(
+    # Clear input after send
+    send_btn.click(
         fn=lambda: "",
         inputs=None,
-        outputs=response_output
+        outputs=question_input
     )
 
+    # Clear chat
+    clear_btn.click(
+        fn=lambda: [],
+        inputs=None,
+        outputs=chatbot
+    )
 
-# =====================================================
-# LAUNCH
-# =====================================================
-interface.launch(
+if __name__ == "__main__":
+    interface.launch(
     server_name="0.0.0.0",
     server_port=7860
 )
